@@ -130,10 +130,8 @@ struct glink_core_rx_intent {
  * @idr_lock:	synchronizes @lcids and @rcids modifications
  * @lcids:	idr of all channels with a known local channel id
  * @rcids:	idr of all channels with a known remote channel id
- * @in_reset:	reset status of this edge
  * @tx_avail_notify: Waitqueue for pending tx tasks
  * @sent_read_notify: flag to check cmd sent or not
- * @ilc:	ipc logging context reference
  */
 struct qcom_glink {
 	struct device *dev;
@@ -166,11 +164,8 @@ struct qcom_glink {
 	unsigned long features;
 
 	bool intentless;
-
 	wait_queue_head_t tx_avail_notify;
 	bool sent_read_notify;
-
-	void *ilc;
 };
 
 enum {
@@ -400,15 +395,6 @@ static void qcom_glink_tx_write(struct qcom_glink *glink,
 	glink->tx_pipe->write(glink->tx_pipe, hdr, hlen, data, dlen);
 }
 
-static void qcom_glink_pipe_reset(struct qcom_glink *glink)
-{
-	if (glink->tx_pipe->reset)
-		glink->tx_pipe->reset(glink->tx_pipe);
-
-	if (glink->rx_pipe->reset)
-		glink->rx_pipe->reset(glink->rx_pipe);
-}
-
 static void qcom_glink_send_read_notify(struct qcom_glink *glink)
 {
 	struct glink_msg msg;
@@ -416,8 +402,6 @@ static void qcom_glink_send_read_notify(struct qcom_glink *glink)
 	msg.cmd = cpu_to_le16(RPM_CMD_READ_NOTIF);
 	msg.param1 = 0;
 	msg.param2 = 0;
-
-	GLINK_INFO(glink->ilc, "send READ NOTIFY cmd\n");
 
 	qcom_glink_tx_write(glink, &msg, sizeof(msg), NULL, 0);
 
@@ -453,19 +437,8 @@ static int qcom_glink_tx(struct qcom_glink *glink,
 			qcom_glink_send_read_notify(glink);
 		}
 
-		/* Wait without holding the tx_lock */
-		spin_unlock_irqrestore(&glink->tx_lock, flags);
-
 		wait_event_timeout(glink->tx_avail_notify,
-				   (qcom_glink_tx_avail(glink) >= tlen
-				   || atomic_read(&glink->in_reset)), 10 * HZ);
-
-		spin_lock_irqsave(&glink->tx_lock, flags);
-
-		if (atomic_read(&glink->in_reset)) {
-			ret = -ECONNRESET;
-			goto out;
-		}
+				   qcom_glink_tx_avail(glink) >= tlen, 10 * HZ);
 
 		if (qcom_glink_tx_avail(glink) >= tlen)
 			glink->sent_read_notify = false;
@@ -1234,10 +1207,6 @@ static irqreturn_t qcom_glink_native_intr(int irq, void *data)
 	unsigned int cmd;
 	int ret = 0;
 
-	if (should_wake) {
-		should_wake = false;
-		pm_system_wakeup();
-	}
 	/* To wakeup any blocking writers */
 	wake_up_all(&glink->tx_avail_notify);
 
@@ -1831,6 +1800,9 @@ static void qcom_glink_rx_close_ack(struct qcom_glink *glink, unsigned int lcid)
 	struct rpmsg_channel_info chinfo;
 	struct glink_channel *channel;
 	unsigned long flags;
+
+	/* To wakeup any blocking writers */
+	wake_up_all(&glink->tx_avail_notify);
 
 	spin_lock_irqsave(&glink->idr_lock, flags);
 	channel = idr_find(&glink->lcids, lcid);
