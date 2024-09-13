@@ -347,18 +347,24 @@ void perf_uprobe_destroy(struct perf_event *p_event)
 int perf_trace_add(struct perf_event *p_event, int flags)
 {
 	struct trace_event_call *tp_event = p_event->tp_event;
+	struct hw_perf_event *hwc = &p_event->hw;
+	struct hlist_head __percpu *pcpu_list;
+	struct hlist_head *list;
+
+	pcpu_list = tp_event->perf_events;
+	if (WARN_ON_ONCE(!pcpu_list))
+		return -EINVAL;
 
 	if (!(flags & PERF_EF_START))
 		p_event->hw.state = PERF_HES_STOPPED;
 
-	/*
-	 * If TRACE_REG_PERF_ADD returns false; no custom action was performed
-	 * and we need to take the default action of enqueueing our event on
-	 * the right per-cpu hlist.
-	 */
-	if (!tp_event->class->reg(tp_event, TRACE_REG_PERF_ADD, p_event)) {
-		struct hlist_head __percpu *pcpu_list;
-		struct hlist_head *list;
+	if (is_sampling_event(p_event)) {
+		hwc->last_period = hwc->sample_period;
+		perf_swevent_set_period(p_event);
+	}
+	
+	list = this_cpu_ptr(pcpu_list);
+	hlist_add_head_rcu(&p_event->hlist_entry, list);
 
 		pcpu_list = tp_event->perf_events;
 		if (WARN_ON_ONCE(!pcpu_list))
