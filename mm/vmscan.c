@@ -3878,8 +3878,7 @@ static void kswapd_per_node_stop(int nid)
  * has failed or is not needed, still wake up kcompactd if only compaction is
  * needed.
  */
-void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
-		   enum zone_type classzone_idx)
+void wakeup_kswapd(struct zone *zone, int order, enum zone_type classzone_idx)
 {
 	pg_data_t *pgdat;
 	enum zone_type curr_idx;
@@ -3887,8 +3886,8 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	if (!managed_zone(zone))
 		return;
 
-	if (!cpuset_zone_allowed(zone, gfp_flags))
-		return;
+	if (!cpuset_zone_allowed(zone, GFP_KERNEL | __GFP_HARDWALL))
+                return;
 
 	pgdat = zone->zone_pgdat;
 	curr_idx = READ_ONCE(pgdat->kswapd_classzone_idx);
@@ -3902,24 +3901,15 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	if (!waitqueue_active(&pgdat->kswapd_wait))
 		return;
 
-	/* Hopeless node, leave it to direct reclaim if possible */
-	if (pgdat->kswapd_failures >= MAX_RECLAIM_RETRIES ||
-	    pgdat_balanced(pgdat, order, classzone_idx)) {
-		/*
-		 * There may be plenty of free memory available, but it's too
-		 * fragmented for high-order allocations.  Wake up kcompactd
-		 * and rely on compaction_suitable() to determine if it's
-		 * needed.  If it fails, it will defer subsequent attempts to
-		 * ratelimit its work.
-		 */
-		if (!(gfp_flags & __GFP_DIRECT_RECLAIM))
-			wakeup_kcompactd(pgdat, order, classzone_idx);
-		return;
-	}
+	/* Hopeless node, leave it to direct reclaim */
+        if (pgdat->kswapd_failures >= MAX_RECLAIM_RETRIES)
+                return;
 
-	trace_mm_vmscan_wakeup_kswapd(pgdat->node_id, classzone_idx, order,
-				      gfp_flags);
-	wake_up_interruptible(&pgdat->kswapd_wait);
+	if (pgdat_balanced(pgdat, order, classzone_idx))
+                return;
+
+	trace_mm_vmscan_wakeup_kswapd(pgdat->node_id, classzone_idx, order);
+        wake_up_interruptible(&pgdat->kswapd_wait);
 }
 
 #ifdef CONFIG_HIBERNATION
